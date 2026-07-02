@@ -37,13 +37,27 @@ def add_user(user_id, username, first_name):
 init_db()
 
 # --- MUSIQA QIDIRISH (FFMPEG SHART EMAS) ---
-def search_and_download_audio(query):
+    def search_and_download_audio(query):
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': 'music_downloads/%(title)s.%(ext)s',
         'noplaylist': True,
         'quiet': True,
-        'prefer_ffmpeg': False  # FFmpeg dasturini majburlamaymiz
+        'prefer_ffmpeg': False,
+        'socket_timeout': 20,  # 20 soniyadan keyin qotib qolishni toʻxtatadi
+        'retries': 2
+    }
+    with YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+            if 'entries' in info and len(info['entries']) > 0:
+                video_info = info['entries'][0]
+                filename = ydl.prepare_filename(video_info)
+                return filename, video_info['title']
+        except Exception as e:
+            print(f"Yuklashda xatolik: {e}")
+            return None, None
+            # FFmpeg dasturini majburlamaymiz
     }
     with YoutubeDL(ydl_opts) as ydl:
         try:
