@@ -1,70 +1,112 @@
 import os
-import telebot
-from telebot import types
-from flask import Flask, request
+import sqlite3
+from telebot import TeleBot, types
+from yt_dlp import YoutubeDL
 
-# 1
+# Bot tokenini shu yerga yozing yoki Render Env-dan oling
 TOKEN = "8745750821:AAG4aUwkq4KaedaSBV9Tgtbbn20Az-51PDI"
-bot = telebot.TeleBot(TOKEN)
+bot = TeleBot(TOKEN)
 
-# 2. Render uchun kichik veb-server yaratish
-app = Flask(__name__)
+# --- MAʼLUMOTLAR BAZASI BILAN ISHLASH ---
+def init_db():
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    # Foydalanuvchilar jadvali
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-@app.route('/' + TOKEN, methods=['POST'])
-def getMessage():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "!", 200
+def add_user(user_id, username, first_name):
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR IGNORE INTO users (user_id, username, first_name)
+        VALUES (?, ?, ?)
+    """, (user_id, username, first_name))
+    conn.commit()
+    conn.close()
 
-@app.route("/")
-def webhook():
-    bot.remove_webhook()
-    return "Bot muvaffaqiyatli ishlamoqda!", 200
+# Bazani faollashtiramiz
+init_db()
 
-# 3. Botingizning asosiy funksiyalari (Sizning musiqangiz)
-MENING_MUSIQAM = "CQACAgIAAxkBAANPakVFrq6-21UWylQp0X8TqI6oGlMAAlebAAKFQylK7ErzG8y-5bI8BA"
+# --- MUSIQA QIDIRISH (YT-DLP) ---
+def search_and_download_audio(query):
+    # Yuklab olish sozlamalari
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'music_downloads/%(title)s.%(ext)s', # musiqalar shu papkaga tushadi
+        'noplaylist': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True
+    }
+    
+    # YouTube-dan qidirish
+    with YoutubeDL(ydl_opts) as ydl:
+        try:
+            # query orqali qidiruv beramiz (ytsearch:)
+            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+            if 'entries' in info and len(info['entries']) > 0:
+                video_info = info['entries'][0]
+                # Yuklangan fayl nomini topamiz
+                filename = ydl.prepare_filename(video_info)
+                # Kengaytmasini mp3 ga o'zgartiramiz (chunki FFmpeg mp3 qiladi)
+                mp3_filename = os.path.splitext(filename)[0] + ".mp3"
+                return mp3_filename, video_info['title']
+        except Exception as e:
+            print(f"Xatolik yuz berdi: {e}")
+            return None, None
 
+# --- BOT BUYRUQLARI ---
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    item1 = types.KeyboardButton("🎵 Tasodifiy musiqa")
-    item2 = types.KeyboardButton("📜 Janrlar")
-    markup.add(item1, item2)
-    bot.send_message(message.chat.id, "Musiqa botga xush kelibsiz! \nTugmalardan birini tanlang:", reply_markup=markup)
+def start_cmd(message):
+    # Foydalanuvchini bazaga qo'shamiz
+    add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    
+    welcome_text = f"Salom, {message.from_user.first_name}!\n\nMusiqa botga xush kelibsiz. Istalgan qoʻshiq nomi yoki ijrochini yozing, men uni topib beraman! 🎵"
+    bot.reply_to(message, welcome_text)
 
-@bot.message_handler(content_types=['audio'])
-def handle_audio(message):
-    file_id = message.audio.file_id
-    bot.reply_to(message, f"✅ Yangi musiqa ID kodi:\n\n`{file_id}`", parse_mode="Markdown")
-
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    if message.text == "🎵 Tasodifiy musiqa":
-        bot.send_message(message.chat.id, "Musiqa yuklanyapti... ⏳")
-        bot.send_audio(message.chat.id, MENING_MUSIQAM, caption="Siz so'ragan ajoyib musiqa! 🔥")
-    elif message.text == "📜 Janrlar":
-        inline_markup = types.InlineKeyboardMarkup()
-        btn1 = types.InlineKeyboardButton("Pop 🕺", callback_data="genre_pop")
-        btn2 = types.InlineKeyboardButton("Rap 🎤", callback_data="genre_rap")
-        inline_markup.add(btn1, btn2)
-        bot.send_message(message.chat.id, "Janrni tanlang:", reply_markup=inline_markup)
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    query = message.text
+    status_msg = bot.reply_to(message, "🔍 Qidirilmoqda, iltimos kuting...")
+    
+    # Papka borligini tekshiramiz
+    if not os.path.exists('music_downloads'):
+        os.makedirs('music_downloads')
+        
+    file_path, title = search_and_download_audio(query)
+    
+    if file_path and os.path.exists(file_path):
+        bot.edit_message_text("📤 Musiqa yuklanmoqda...", chat_id=message.chat.id, message_id=status_msg.message_id)
+        
+        # Audio faylni yuboramiz
+        with open(file_path, 'rb') as audio:
+            bot.send_audio(message.chat.id, audio, caption=f"🎵 {title}\n\n@SizningBotiz")
+            
+        # Yuklangan faylni o'chirib tashlaymiz (Xotira to'lib ketmasligi uchun)
+        os.remove(file_path)
+        bot.delete_message(message.chat.id, status_msg.message_id)
     else:
-        if "sher" in message.text.lower() or "musiqa" in message.text.lower(): 
-            bot.send_message(message.chat.id, f"🔍 '{message.text}' bo'yicha musiqa topildi!")
-            bot.send_audio(message.chat.id, MENING_MUSIQAM)
-        else:
-            bot.send_message(message.chat.id, f"😔 Kechirasiz, '{message.text}' bo'yicha hech narsa topilmadi.")
+        bot.edit_message_text("❌ Afsuski, hech narsa topilmadi yoki yuklashda xatolik bo'ldi.", chat_id=message.chat.id, message_id=status_msg.message_id)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
-    if call.data == "genre_pop":
-        bot.send_audio(call.message.chat.id, MENING_MUSIQAM, caption="Pop janridagi sara musiqa!")
-    elif call.data == "genre_rap":
-        bot.send_message(call.message.chat.id, "Tez orada Rap musiqalar qo'shiladi!")
-    bot.answer_callback_query(call.id)
-
-# 4. Serverni ishga tushirish qismi
+# Botni ishga tushirish (Web-hook kodingiz bo'lsa o'sha joyiga qo'ying)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    bot.delete_webhook()
+    bot.infinity_polling()
+# Botni ishga tushirish qismi
+if __name__ == "__main__":
+    # Avval faol bo'lgan webhookni o'chiramiz (shunda telefonda ishlaydi)
+    bot.delete_webhook()
+    
+    print("Bot muvaffaqiyatli ishga tushdi...")
+    bot.infinity_polling()
