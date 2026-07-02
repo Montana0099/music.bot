@@ -92,7 +92,7 @@ def getMessage():
 def webhook():
     bot.remove_webhook()
     # RENDER_URL degan joyga Render bergan sayt manzilingizni qo'ying
-    RENDER_URL = "YOUR_RENDER_WEB_SERVICE_URL" 
+    RENDER_URL = "https://music-bot-9nde.onrender.com" 
     bot.set_webhook(url=RENDER_URL + '/' + TOKEN)
     return "Bot faol!", 200
 
